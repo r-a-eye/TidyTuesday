@@ -1,0 +1,147 @@
+Setup {packages and dataset}
+
+```{r packages _&_data, echo=TRUE, message=FALSE, warning=FALSE}
+#Setup---------------------------------------
+requiredPackages=c("tidyverse", "tidymodels", "janitor","psych", "sjPlot")
+
+ for(p in requiredPackages) {if(!require(p,character.only = TRUE)) 
+   install.packages(p) 
+   library(p,character.only = TRUE)}
+
+set_theme(base = theme_538(), title.color = "#363636", axis.title.color = "#696969" , axis.textcolor = "#4f4f4f")
+
+
+df_link <-  "https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-05-26/boston_cocktails.csv"
+
+cocktails_df <-  readr::read_csv(df_link)
+
+```
+
+Get feel for the data
+```{r echo=TRUE, fig.height=4, fig.width=6}
+sapply(cocktails_df, function(x)length(unique(x)))##unique values of  all columns
+
+psych::headTail(cocktails_df,top=5,bottom=5,ellipsis = T) ##This step is used to view the data structure
+
+sapply(cocktails_df, function(y) sum(is.na(y)))##checking for N/As
+
+##plotting cocktails per category
+cocktails_df %>% count(category,sort = T) %>%
+     mutate(category= fct_reorder(category,n)) %>%
+      ggplot(aes(x=n,y=category))+geom_col()+
+      labs(x= "Number of drinks",
+           y= "categories",
+           title="Number of cocktails per category") + 
+      theme(plot.title = element_text(size = 14, face = "bold" ))
+
+Cocktails_count =  length(unique(cocktails_df$name))#989 variations of cocktails
+
+
+
+##Most cocktails have up to 4 ingredients
+cocktails_df %>% 
+  count(cocktails_df$ingredient_number, sort = T) %>% 
+  summarise(group_by(.),Cumulative_total= (cumsum(n)/sum(n)*100)) 
+
+##Most common ingredients
+cocktails_df %>% count(ingredient, sort = T) %>% head(30) %>% 
+  mutate(ingredient = fct_reorder( ingredient ,  n)) %>% 
+  ggplot(aes(x=n, y=ingredient))+ geom_col() + 
+  labs(x= "number of ingredients", y = "ingredients" ,title = "30 most common ingredients")
+
+
+##Measures
+cocktails_df %>% count(cocktails_df$measure,sort = T) 
+
+```
+
+
+Measures and ingredients need  a lot of cleaning before any meaningful insight can be extracted
+
+```{r Data cleansing, echo=TRUE, fig.height=4, fig.width=4}
+cocktails_df <- as.data.frame(apply(cocktails_df,2,tolower))
+
+cocktails_df_cleansed <- cocktails_df %>%
+  mutate(
+    ###ingredient = str_replace_all(ingredient, "-","_"),
+    ingredient = str_remove_all(ingredient, "liqueur"),
+    ingredient = str_remove(ingredient, "(if desired)"),
+    ingredient = case_when(
+      str_detect(ingredient, "bitters") ~ "bitters",
+      str_detect(ingredient, "lime")~ "lime juice",
+      str_detect(ingredient, "grapefruit") ~ "grapefruit juice",
+      str_detect(ingredient, "orange") ~ "orange juice",
+      str_detect(ingredient, "cranberry") ~ "cranberry juice",
+      str_detect(ingredient, "lemon") ~ "lemon juice",
+      str_detect(ingredient, "strawberry") ~ "strawberry slice",
+      str_detect(ingredient, "creme de cacao") ~ "creme de cacao",
+      str_detect(ingredient, "whipper cream") ~ "whipped",
+      str_detect(ingredient, "milk") ~ "milk",
+      TRUE ~ ingredient
+    )
+  )
+
+##cleaning up Measure
+cocktails_df_cleansed <-  cocktails_df_cleansed %>%
+  mutate(
+    measure = str_replace(measure, " ?1/2" , ".5"),
+    measure = str_replace(measure, " ?3/4", ".75"),
+    measure = str_replace(measure, " ?1/4", ".25"),
+    measure = str_replace(measure, " ?2/3", ".666"),
+    measure = str_replace(measure, " ?1/3", ".333"),
+)
+
+##For simplicity, I am removing all rows that are not using ounces as a unit. This step will remove 54 observations
+cleansed_df=subset(cocktails_df_cleansed, grepl("oz",cocktails_df_cleansed$measure, fixed = F))
+
+cleansed_df=mutate(cleansed_df, measure_unit = parse_number(measure))
+
+```
+
+Exploratory Data Analysis (EDA)
+
+```{r 30 most common ingredients per category, echo=TRUE, fig.height=5, fig.width=8}
+#First I want to explore the relationship between ingredients and category of top 30 recipes
+cocktails_df %>% count(category, ingredient, sort =T) %>%
+  mutate(category=fct_lump(category, 6),
+         ingredient = fct_lump(ingredient, 30 )) %>%
+  filter(ingredient != "Other") %>%
+  mutate(ingredient = fct_reorder(ingredient, n, sum)) %>%
+  ggplot(aes(n/Cocktails_count, ingredient, fill = category ))+ 
+  geom_col()+ scale_x_continuous(labels=percent_format())+
+  labs(title= "30 most common ingredients in recipes",
+       subtitle= "composition of cocktails types that these ingredients",
+       x = "% of cocktails",
+       y = "ingredients",
+       fill="Categories"
+  )+ theme(plot.title = element_text(size = 14, face = "bold" ),
+                                     legend.key = element_rect(colour = "transparent",fill = "transparent"),
+                                     legend.background = element_blank())
+
+```
+
+```{r Ingredients that go together, echo=TRUE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+##Next, I am going to visualise the position of each ingredient within all cocktails
+ingredients_combo <-  cleansed_df %>% group_by(name) %>%
+  mutate(percentile = row_number() / n()) %>%
+  group_by(ingredient) %>%
+  summarise(
+    n = n(),
+    total_ounces = sum(measure_unit, na.rm = T),
+    avg_position = mean(percentile),
+    avg_serving = mean(measure_unit, na.rm = T)
+  ) %>%
+arrange(desc(n))
+
+ingredients_combo %>%
+  ggplot(aes(avg_position, avg_serving)) +
+  geom_point(aes()) +
+  labs(title ="Position of each ingredient in cocktails",
+      y = "Avg serving size (in oz)",
+      x = "Avg position within drink(1=one ingredient | .25= 4 or more ingredients") +
+  theme(plot.title = element_text(size = 14, face = "bold" ),
+                                     legend.key = element_rect(colour = "transparent",fill = "transparent"),
+                                     legend.background = element_blank())
+
+
+```
